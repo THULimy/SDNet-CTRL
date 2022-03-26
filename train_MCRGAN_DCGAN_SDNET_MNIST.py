@@ -41,6 +41,11 @@ def train(netG, netD, device, dataloader, optimizerG, optimizerD, schedulerG, sc
     iters = 0
     for epoch in range(1,num_epochs+1):
         for i, (X, cls_label) in enumerate(dataloader):
+            # update_stepsize
+            # only netD have dictnet for now, may include netG in the future
+            if epoch>1:
+                netD.module.update_stepsize() if isinstance(netD, torch.nn.DataParallel) else netD.update_stepsize()
+
             #*****
             # Update Discriminator/Encoder
             #*****
@@ -115,7 +120,7 @@ def train(netG, netD, device, dataloader, optimizerG, optimizerD, schedulerG, sc
 def main():
     ### Hyper-Parameters
     dataset = 'MNIST'
-    arch = 'DCGAN' 
+    arch = 'DCGAN-SDNET' 
     workers = 2
     batch_size = 2048
     image_size = 32
@@ -182,10 +187,7 @@ def main():
                                                 shuffle=True, num_workers=workers)
 
     # Create the generator
-    if arch == 'DCGAN':
-        from models.DCGAN import Generator, Discriminator
-    elif arch == 'DCGAN-sdnet':
-        from models.sdnet_DCGAN import Generator, Discriminator
+    from models.sdnet_DCGAN import Generator, Discriminator
 
     netG = Generator(ngpu, nz, ngf, nc).to(device)
     netD = Discriminator(ngpu, nz, ndf, nc).to(device)

@@ -96,3 +96,8 @@ class Discriminator(nn.Module):
 
     def forward(self, input):
         return F.normalize(self.main(input))
+
+    def update_stepsize(self):
+        for m in self.modules():
+            if isinstance(m, DictBlock):
+                m.update_stepsize()
