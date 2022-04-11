@@ -47,7 +47,7 @@ def normalize_back(img, mean=(0.5, 0.5, 0.5), std=(0.5,0.5,0.5)):
     std = torch.tensor(std).view(1,-1,1,1)
     return (img*std)+mean
 
-def save_fig(imgs, epoch, iters, model_dir='./'):
+def save_fig(imgs, epoch, iters, model_dir='./', tail=''):
     if not isinstance(imgs, list):
         imgs = [imgs]
     fix, axs = plt.subplots(ncols=len(imgs), squeeze=False)
@@ -56,7 +56,7 @@ def save_fig(imgs, epoch, iters, model_dir='./'):
         img = FF.to_pil_image(img)
         axs[0, i].imshow(np.asarray(img))
         axs[0, i].set(xticklabels=[], yticklabels=[], xticks=[], yticks=[])
-    plt.savefig(os.path.join(model_dir,'images',str(epoch)+'_'+str(iters)+".png"))
+    plt.savefig(os.path.join(model_dir,'images',str(epoch)+'_'+str(iters)+'_'+ tail +".png"))
 
 class MyAffineTransform:
     """Transform by one of the ways."""
@@ -69,3 +69,31 @@ class MyAffineTransform:
         choice = random.choice(self.choices)
         x = FF.affine(x, angle=choice[0], scale=choice[1], translate=[0,0], shear=0)
         return x
+
+def sort_dataset(data, labels, num_classes=10, stack=False):
+    """Sort dataset based on classes.
+    
+    Parameters:
+        data (np.ndarray): data array
+        labels (np.ndarray): one dimensional array of class labels
+        num_classes (int): number of classes
+        stack (bol): combine sorted data into one numpy array
+    
+    Return:
+        sorted data (np.ndarray), sorted_labels (np.ndarray)
+
+    """
+    sorted_data = [[] for _ in range(num_classes)]
+    for i, lbl in enumerate(labels):
+        sorted_data[lbl].append(data[i])
+    sorted_data = [np.stack(class_data) for class_data in sorted_data]
+    sorted_labels = [np.repeat(i, (len(sorted_data[i]))) for i in range(num_classes)]
+    if stack:
+        sorted_data = np.vstack(sorted_data)
+        sorted_labels = np.hstack(sorted_labels)
+    return sorted_data, sorted_labels
+
+def compute_accuracy(y_pred, y_true):
+    """Compute accuracy by counting correct classification. """
+    assert y_pred.shape == y_true.shape
+    return 1 - np.count_nonzero(y_pred - y_true) / y_true.size

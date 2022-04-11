@@ -1,5 +1,7 @@
 import torch
-from utils import *
+import numpy as np
+import torch.nn as nn
+from utils import label_to_membership
 
 class MaximalCodingRateReduction(torch.nn.Module):
     def __init__(self, gam1=1.0, gam2=1.0, eps=0.01):
@@ -50,7 +52,7 @@ class MaximalCodingRateReduction(torch.nn.Module):
             compress_loss += trPi / (2 * m) * log_det
         return compress_loss
 
-    def forward(self, X, Y, num_classes=None):
+    def forward(self, X, Y, num_classes=10):
         if num_classes is None:
             num_classes = Y.max() + 1
         W = X.T
@@ -76,7 +78,7 @@ class MCRGANloss(nn.Module):
         self.num_class = num_class
         self.train_mode = mode
 
-    def forward(self, Z, Z_bar, real_label):
+    def forward(self, Z, Z_bar, real_label, weights=[1,1,1]):
 
         if self.train_mode == 'multi':
             loss_z, _, _ = self.criterion(Z, real_label)
@@ -87,7 +89,19 @@ class MCRGANloss(nn.Module):
                 new_label = torch.cat((torch.zeros_like(real_label[real_label == i]), torch.ones_like(real_label[real_label == i])), dim=0)
                 loss, _, _ = self.criterion(new_Z, new_label)
                 loss_class += loss    
-            errD = loss_z + loss_h + loss_class
+            errD = weights[0] * loss_z + weights[1] * loss_h + weights[2] * loss_class
+            return errD, [loss_z, loss_h, loss_class]
+
+        elif self.train_mode == 'max_multi':
+            loss_z, _, _ = self.criterion(Z, real_label)
+            loss_h, _, _ = self.criterion(Z_bar, real_label)
+            loss_class = 0 
+            for i in np.arange(self.num_class):
+                new_Z = torch.cat((Z[real_label == i], Z_bar[real_label == i]), dim=0)
+                new_label = torch.cat((torch.zeros_like(real_label[real_label == i]), torch.ones_like(real_label[real_label == i])), dim=0)
+                loss, _, _ = self.criterion(new_Z, new_label)
+                loss_class += loss    
+            errD = loss_z + loss_h - loss_class
             return errD, [loss_z, loss_h, loss_class]
 
         elif self.train_mode == 'binary':
