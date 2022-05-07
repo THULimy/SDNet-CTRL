@@ -22,7 +22,7 @@ from typing import List, Union, Tuple
 # import train_func as tf
 import utils
 from scipy import linalg
-from models.inceptionII import InceptionV3 as IC
+# from models.inceptionII import InceptionV3 as IC
 
 # Set random seeds and deterministic pytorch for reproducibility
 manualSeed = 100
@@ -41,7 +41,9 @@ def plot_pca(args, features, labels, epoch, select_label=None):
         os.makedirs(pca_dir)
 
     ## perform PCA on features
-    n_comp = np.min([args.n_comp, features.shape[1]])
+    # n_comp = np.min([args.n_comp, features.shape[1]])
+    n_comp = features.shape[1]
+
     num_classes = labels.numpy().max() + 1
     features_sort, _ = utils.sort_dataset(features.numpy(), labels.numpy(), 
                             num_classes=num_classes, stack=False)
@@ -410,7 +412,7 @@ def plot_tsne_all(args, features, features_recon, labels, epoch):
     print("Plot saved to: {}".format(file_name))
     plt.close()
 
-def plot_random_gen(args, netG, ncomp=8, scale=0.5):
+def plot_random_gen(args, model, ncomp=8, scale=0.5):
     '''
         ncomp: the number of components for random sampling
         scale: value to control sample range
@@ -430,7 +432,7 @@ def plot_random_gen(args, netG, ncomp=8, scale=0.5):
         Z_random = means_each_class[i] + np.dot((scale * var_vals * random_samples), components_each_class[i][:ncomp]) # can modify scale to lower value to get more clear results  
         Z_random = Z_random / np.linalg.norm(Z_random, axis=1).reshape(-1,1)
         print(np.linalg.norm(Z_random, axis=1))
-        X_recon_random = netG(torch.tensor(Z_random, dtype=torch.float).view(64,nz,1,1).to(device)).cpu().detach()
+        X_recon_random = model._inverse(torch.tensor(Z_random, dtype=torch.float).view(64,nz,1,1).to(device)).cpu().detach()
         print(X_recon_random.shape)
         random_images.append(X_recon_random)
         
@@ -442,7 +444,7 @@ def plot_random_gen(args, netG, ncomp=8, scale=0.5):
         save_dir = os.path.join(args.model_dir, 'figures', 'images')
         if not os.path.exists(save_dir):
             os.makedirs(save_dir)
-        file_name = os.path.join(save_dir, f"random_recon_images_epoch{args.epoch}_scale{scale}_class{i}.png")
+        file_name = os.path.join(save_dir, f"random_recon_images_epoch{args.epoch}_ncomp{ncomp}_scale{scale}_class{i}.png")
         plt.savefig(file_name)
         print("Plot saved to: {}".format(file_name))
 
@@ -455,7 +457,7 @@ def plot_random_gen(args, netG, ncomp=8, scale=0.5):
     save_dir = os.path.join(args.model_dir, 'figures', 'images')
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
-    file_name = os.path.join(save_dir, f"random_recon_images_epoch{args.epoch}_scale{scale}_ncomp{ncomp}_all_{manualSeed}.png")
+    file_name = os.path.join(save_dir, f"random_recon_images_epoch{args.epoch}_ncomp{ncomp}_scale{scale}_all_{manualSeed}.png")
     plt.savefig(file_name)
     print("Plot saved to: {}".format(file_name))
 
@@ -944,7 +946,7 @@ def get_data(trainloader, verbose=True):
         labels.append(batch_lbls)
     return torch.cat(features), torch.cat(labels)
 
-def get_features(model, trainloader, verbose=True):
+def get_features(model, trainloader, norm=True, verbose=True):
     '''Extract all features out into one single batch. 
     
     Parameters:
@@ -967,8 +969,8 @@ def get_features(model, trainloader, verbose=True):
     for step, (X, Y) in enumerate(train_bar):
         model.module.update_stepsize() if isinstance(model, torch.nn.DataParallel) else model.update_stepsize()
 
-        Z = model.f_forward(X.cuda())
-        X_hat = model.g_forward(Z.reshape(len(Z),-1,1,1))
+        Z, X_hat = model(X.cuda(), norm=norm)
+        # X_hat = model.g_forward(Z.reshape(len(Z),-1,1,1))
         
         features.append(Z.view(-1, Z.shape[1]).cpu().detach())
         recons.append(X_hat.cpu().detach())
@@ -976,7 +978,7 @@ def get_features(model, trainloader, verbose=True):
         imgs.append(X.cpu().detach())
     return torch.cat(features), torch.cat(labels), torch.cat(recons), torch.cat(imgs)
 
-def get_features_gaussian_noise(model, trainloader, noise_sd=0.1, verbose=True):
+def get_features_gaussian_noise(model, trainloader, noise_sd=0.1, norm=True, verbose=True):
     '''Extract all features out into one single batch. 
     
     Parameters:
@@ -1000,14 +1002,55 @@ def get_features_gaussian_noise(model, trainloader, noise_sd=0.1, verbose=True):
         model.module.update_stepsize() if isinstance(model, torch.nn.DataParallel) else model.update_stepsize()
 
         X_noisy = X + noise_sd * torch.randn_like(X)
-        Z = model.f_forward(X_noisy.cuda())
-        X_hat = model.g_forward(Z.reshape(len(Z),-1,1,1))
+        X_noisy = X_noisy.clamp(min=-1.0, max=1.0)
+        # print(X.max(), X.min())
+        # print(X_noisy.max(), X_noisy.min())
+
+        Z, X_hat = model(X_noisy.cuda(), norm=norm)
         
         features.append(Z.view(-1, Z.shape[1]).cpu().detach())
         recons.append(X_hat.cpu().detach())
         labels.append(Y)
         imgs.append(X_noisy.cpu().detach())
     return torch.cat(features), torch.cat(labels), torch.cat(recons), torch.cat(imgs)
+
+def get_features_SP_noise(model, trainloader, mode='s&p', amount=0.2, norm=True, verbose=True):
+    '''Extract all features out into one single batch. 
+    
+    Parameters:
+        net (torch.nn.Module): get features using this model
+        trainloader (torchvision.dataloader): dataloader for loading data
+        verbose (bool): shows loading staus bar
+
+    Returns:
+        features (torch.tensor): with dimension (num_samples, feature_dimension)
+        labels (torch.tensor): with dimension (num_samples, )
+    '''
+    from skimage.util import random_noise
+    features = []
+    recons = []
+    labels = []
+    imgs = []
+    if verbose:
+        train_bar = tqdm(trainloader, desc="extracting all features from dataset")
+    else:
+        train_bar = trainloader
+    for step, (X, Y) in enumerate(train_bar):
+        model.module.update_stepsize() if isinstance(model, torch.nn.DataParallel) else model.update_stepsize()
+
+        X_noisy = torch.tensor(random_noise(X, mode=mode, amount=amount))
+
+        # print(X.max(), X.min())
+        # print(X_noisy.max(), X_noisy.min())
+
+        Z, X_hat = model(X_noisy.cuda(), norm=norm)
+        
+        features.append(Z.view(-1, Z.shape[1]).cpu().detach())
+        recons.append(X_hat.cpu().detach())
+        labels.append(Y)
+        imgs.append(X_noisy.cpu().detach())
+    return torch.cat(features), torch.cat(labels), torch.cat(recons), torch.cat(imgs)
+
 
 def train_clf_and_adv_attack_on_subspace(model, trainloader, testloader, ckpt_dir): 
     '''
@@ -1776,6 +1819,21 @@ def calculate_activation_statistics(images, model, batch_size=64, dims=2048, dev
     sigma = np.cov(act, rowvar=False)
     return mu, sigma
 
+class AE(nn.Module):
+    def __init__(self, netD, netG):
+        super(AE, self).__init__()
+        self.netD = netD
+        self.netG = netG
+
+    def forward(self, x, norm=True):
+        z = self.netD(x, norm)
+        x_hat = self.netG(z.reshape(len(z),-1,1,1))
+        return z, x_hat
+
+    def update_stepsize(self):
+        pass
+        # self.netD.update_stepsize()
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluation')
     parser.add_argument('--model_dir', type=str, help='base directory for saving PyTorch model.')
@@ -1796,6 +1854,9 @@ if __name__ == '__main__':
     parser.add_argument('--hist', help='plot histogram of cosine similarity of features', action='store_true')
     parser.add_argument('--IS', help='eval is', action='store_true')
     parser.add_argument('--FID', help='eval fid', action='store_true')
+    parser.add_argument('--sampling', help='sampling / random gen', action='store_true')
+    parser.add_argument('--verify_noise', help='verify noisy reconstruction', action='store_true')
+
     
     parser.add_argument('--k', type=int, default=5, help='top k components for kNN')
     parser.add_argument('--n', type=int, default=10, help='number of clusters for cluster (default: 10)')
@@ -1810,26 +1871,56 @@ if __name__ == '__main__':
 
     ## load model
     if args.dataset == 'MNIST':
+        nz = 256
+        ngf = 64
+        nc = 1
+        img_size = 32
+    elif args.dataset == 'FMNIST':
         nz = 128
         ngf = 64
         nc = 1
-    elif args.dataset == 'CIFAR10':
+        img_size = 32
+    elif args.dataset == 'CIFAR10' :
         nz = 512
         ngf = 64
         nc = 3
+        img_size = 32
+    elif args.dataset == 'STL10':
+        nz = 512
+        ngf = 64
+        nc = 3
+        img_size = 96
     else:
         raise NameError('Unsupported dataset.')
+    
+    from config import config as _cfg
+    cfg = _cfg
+    cfg['MODEL']['LAMBDA'][0] = 0.0 # modify lambda in testing
+    lamda = cfg['MODEL']['LAMBDA'][0]
+    from models.sdnet_DCGAN import Generator, Discriminator, InverseNet
+    # if arch == 'INVERSE2':
+    # model = InverseNet2(nz, ngf, nc).to(device)
+    # if arch == 'INVERSE_BLOCK_4_LAYERS':
+    #     model = InverseNet_block(nz, ngf, nc, n_layers=[1,1,1,1]).to(device)
+    # if arch == 'INVERSE_BLOCK_6_LAYERS':
+    #     model = InverseNet_block(nz, ngf, nc, n_layers=[1,2,2,1]).to(device)
+    # if arch == 'INVERSE_BLOCK_8_LAYERS':
+    #     model = InverseNet_block(nz, ngf, nc, n_layers=[1,3,3,1]).to(device)
 
-    from models.sdnet_DCGAN import Generator, Discriminator, InverseNet2
-    model = InverseNet2(nz, ngf, nc).to(device)
+    model = InverseNet(nz, ngf, nc).to(device)
+    # model = InverseNet2(nz, ngf, nc).to(device)
+    # model = InverseNet_Baseline(nz, ngf, nc).to(device)
+    # model = InverseNet_block(nz, 128, nc, n_layers=[1,1,1,1]).to(device)
+    # model = InverseNet_last_layer_sparse(nz, ngf, nc, last_lmbd=0.1).to(device)
+    # model = InverseNet_for_STL(nz, ngf, nc).to(device)
+    # model = InverseNet_Baseline_for_STL(nz, ngf, nc).to(device)
 
     with torch.no_grad():
         print("====================")
-        inputx = torch.zeros([100, nc, 32, 32]).cuda()
+        inputx = torch.zeros([100, nc, img_size, img_size]).cuda()
         # print(inputx)
-        _ = model.f_forward(inputx)
+        _ = model._forward(inputx)
         print("====================")
-
 
     if args.epoch is None: # get last epoch
         ckpt_dir = os.path.join(args.model_dir, 'checkpoints')
@@ -1840,6 +1931,34 @@ if __name__ == '__main__':
     print('Loading checkpoint: {}'.format(ckpt_path))
     state_dict = torch.load(ckpt_path)
     model.load_state_dict(state_dict)
+    model.eval()
+    
+    # netG = Generator_for_STL(nz, ngf, nc).to(device)
+    # netD = Discriminator_for_STL(nz, ngf, nc).to(device)
+    # netD = Discriminator_SDNet_for_STL(nz, ngf, nc).to(device)
+
+    # with torch.no_grad():
+    #     print("====================")
+    #     inputx = torch.zeros([100, nc, img_size, img_size]).cuda()
+    #     # print(inputx)
+    #     _ = netD(inputx)
+    #     print("====================")
+
+    # if args.epoch is None: # get last epoch
+    #     ckpt_dir = os.path.join(args.model_dir, 'checkpoints')
+    #     epochs = [int(e[11:-3]) for e in os.listdir(ckpt_dir) if e[-3:] == ".pt"]
+    #     epoch = np.sort(epochs)[-1]
+    # ckpt_path_D = os.path.join(args.model_dir, 'checkpoints', 'model-D-epoch{}.pt'.format(args.epoch))
+    # ckpt_path_G = os.path.join(args.model_dir, 'checkpoints', 'model-G-epoch{}.pt'.format(args.epoch))
+
+    # print('Loading checkpoint: {}'.format(ckpt_path_D))
+    # state_dict_D = torch.load(ckpt_path_D)
+    # netD.load_state_dict(state_dict_D)
+    # print('Loading checkpoint: {}'.format(ckpt_path_G))
+    # state_dict_G = torch.load(ckpt_path_G)
+    # netG.load_state_dict(state_dict_G)
+    
+    # model = AE(netD, netG)  
     # model.eval()
     
     # set dataset
@@ -1869,28 +1988,126 @@ if __name__ == '__main__':
                                     download=True, transform=transform)
         testloader = torch.utils.data.DataLoader(testset, batch_size=200, drop_last=False,
                                                 shuffle=False, num_workers=2)
-    from config import config as _cfg
-    cfg = _cfg
-    noise_sd = 0.5
-    lamda = cfg['MODEL']['LAMBDA'][0]
+    elif args.dataset == 'FMNIST':
+        transform = transforms.Compose(
+                    [transforms.Resize(32),
+                    transforms.ToTensor(),
+                    transforms.Normalize(0.5, 0.5)])
+        trainset = datasets.FashionMNIST(root='./data', train=True,
+                                    download=True, transform=transform)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=200, drop_last=False,
+                                                shuffle=False, num_workers=2)
+        testset = datasets.FashionMNIST(root='./data', train=False,
+                                    download=True, transform=transform)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=200, drop_last=False,
+                                                shuffle=False, num_workers=2)
+    elif args.dataset == 'STL10':
+        transform = transforms.Compose(
+                    [transforms.ToTensor(),
+                    transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))])
+        trainset = datasets.STL10(root='./data', split='train',
+                                    download=True, transform=transform)
+        trainloader = torch.utils.data.DataLoader(trainset, batch_size=200, drop_last=False,
+                                                shuffle=False, num_workers=2)
+        testset = datasets.STL10(root='./data', split='test',
+                                    download=True, transform=transform)
+        testloader = torch.utils.data.DataLoader(testset, batch_size=200, drop_last=False,
+                                                shuffle=False, num_workers=2)
+
+    
+    norm = False
+    print('Norm:', norm)
     # get train features and labels
-    train_features, train_labels, train_X_hat, train_X = get_features(model, trainloader)
-    # train_features, train_labels = get_data(trainloader)
-    train_features_noisy, train_labels_noisy, train_X_hat_noisy, train_X_noisy  = get_features_gaussian_noise(model, trainloader, noise_sd=noise_sd)
+    train_features, train_labels, train_X_hat, train_X = get_features(model, trainloader, norm=norm)
+    test_features, test_labels, test_X_hat, test_X  = get_features(model, testloader, norm=norm)
+    
+    if args.verify_noise:
+        # train_features, train_labels = get_data(trainloader)
+        mode = 'Gaussian'
 
-    # get test features and labels
-    test_features, test_labels, test_X_hat, test_X  = get_features(model, testloader)
-    test_features_noisy, test_labels_noisy, test_X_hat_noisy, test_X_noisy  = get_features_gaussian_noise(model, testloader, noise_sd=noise_sd)
+        print('Noise mode:',mode)
+        
+        if mode == 'Gaussian':
+            noise_sd = 0.5
+            print('Noise SD:', noise_sd)
+            train_features_noisy, train_labels_noisy, train_X_hat_noisy, train_X_noisy  = get_features_gaussian_noise(model, trainloader, noise_sd=noise_sd, norm=norm)
+            test_features_noisy, test_labels_noisy, test_X_hat_noisy, test_X_noisy  = get_features_gaussian_noise(model, testloader, noise_sd=noise_sd, norm=norm)
+        elif mode == 'S&P':
+            amount = 0.2
+            print('Noise amount:',amount)
+            train_features_noisy, train_labels_noisy, train_X_hat_noisy, train_X_noisy  = get_features_SP_noise(model, trainloader, mode=mode, amount=amount, norm=norm)
+            test_features_noisy, test_labels_noisy, test_X_hat_noisy, test_X_noisy  = get_features_SP_noise(model, testloader, mode=mode, amount=amount, norm=norm)
 
-    # test_features, test_labels = get_data(testloader)
-    plot_recon_imgs(train_X, train_X_hat, test_X, test_X_hat) # Figure 3,5,8,10 -- draw reconstruction results
-    # print(train_X.shape)
-    # utils.save_fig(vutils.make_grid(train_X[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail='train_X')
-    # utils.save_fig(vutils.make_grid(train_X_hat[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail='train_X_hat')
-    utils.save_fig(vutils.make_grid(test_X_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'test_X_noisy_{noise_sd}')
-    utils.save_fig(vutils.make_grid(test_X_hat_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'test_X_hat_noisy{noise_sd}_lambda{lamda}')
-    utils.save_fig(vutils.make_grid(train_X_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'train_X_noisy_{noise_sd}')
-    utils.save_fig(vutils.make_grid(train_X_hat_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'train_X_hat_noisy{noise_sd}_lambda{lamda}')
+        # train_X_diff = train_X-train_X_hat
+        # test_X_diff = test_X-test_X_hat
+        # print('Train X_recon - X diff:')
+        # print('L1:', train_X_diff.abs().sum(dim=(1,2,3)).mean())
+        # print('L2:', train_X_diff.norm(p=2,dim=(1,2,3)).mean())
+
+        # print('Test X_recon - X diff:')
+        # print('L1:', test_X_diff.abs().sum(dim=(1,2,3)).mean())
+        # print('L2:', test_X_diff.norm(p=2,dim=(1,2,3)).mean())
+
+        # print('Train Z:')
+        # print('L1:', train_features.abs().sum(dim=1).mean())
+        # print('L2:', train_features.norm(p=2,dim=1).mean())
+
+        # print('Test Z:')
+        # print('L1:', test_features.abs().sum(dim=1).mean())
+        # print('L2:', test_features.norm(p=2,dim=1).mean())
+
+        # train_X_noisy_to_clean_diff = train_X - train_X_hat_noisy
+        # test_X_noisy_to_clean_diff = test_X - test_X_hat_noisy
+        
+        # print('Train X_noisy_recon - X diff:')
+        # print('L1:', train_X_noisy_to_clean_diff.abs().sum(dim=(1,2,3)).mean().item())
+        # print('L2:', train_X_noisy_to_clean_diff.norm(p=2,dim=(1,2,3)).mean().item())
+
+        # print('Test X_noisy_recon - X diff:')
+        # print('L1:', test_X_noisy_to_clean_diff.abs().sum(dim=(1,2,3)).mean().item())
+        # print('L2:', test_X_noisy_to_clean_diff.norm(p=2,dim=(1,2,3)).mean().item())
+
+        ## evaluating image quality
+        from skimage.measure import compare_psnr, compare_mse, compare_ssim
+        p,m,s = 0,0,0
+        n = 1000 # number of samples
+        for i in range(n):
+            p += compare_psnr(train_X[i].numpy(), train_X_hat_noisy[i].numpy())
+            m += compare_mse(train_X[i].numpy(), train_X_hat_noisy[i].numpy())
+            s += compare_ssim(train_X[i].permute((1,2,0)).numpy(), train_X_hat_noisy[i].permute((1,2,0)).numpy(), multichannel=True)  # 对于多通道图像(RGB、HSV等)关键词multichannel要设置为True
+        p, m, s = p/n, m/n, s/n
+        print('Train Noisy images:')
+        print('PSNR:{}'.format(p))
+        print('MSE:{}'.format(m))
+        print('SSIM:{}'.format(s))
+
+        p,m,s = 0,0,0
+        n = 1000 # number of samples
+        for i in range(n):
+            p += compare_psnr(test_X[i].numpy(), test_X_hat_noisy[i].numpy())
+            m += compare_mse(test_X[i].numpy(), test_X_hat_noisy[i].numpy())
+            s += compare_ssim(test_X[i].permute((1,2,0)).numpy(), test_X_hat_noisy[i].permute((1,2,0)).numpy(), multichannel=True)  # 对于多通道图像(RGB、HSV等)关键词multichannel要设置为True
+        p, m, s = p/n, m/n, s/n
+        print('Test Noisy images:')
+        print('PSNR:{}'.format(p))
+        print('MSE:{}'.format(m))
+        print('SSIM:{}'.format(s))
+
+        # test_features, test_labels = get_data(testloader)
+        plot_recon_imgs(train_X, train_X_hat, test_X, test_X_hat) # Figure 3,5,8,10 -- draw reconstruction results
+        # print(train_X.shape)
+        # utils.save_fig(vutils.make_grid(train_X[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail='train_X')
+        # utils.save_fig(vutils.make_grid(train_X_hat[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail='train_X_hat')
+
+        utils.save_fig(vutils.make_grid(test_X_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'test_X_noisy_{noise_sd}_new')
+        utils.save_fig(vutils.make_grid(test_X_hat_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'test_X_hat_noisy{noise_sd}_lambda{lamda}_new')
+        utils.save_fig(vutils.make_grid(train_X_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'train_X_noisy_{noise_sd}_new')
+        utils.save_fig(vutils.make_grid(train_X_hat_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'train_X_hat_noisy{noise_sd}_lambda{lamda}_new')
+
+        # utils.save_fig(vutils.make_grid(test_X_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'test_X_noisy_mode{mode}_amount{amount}')
+        # utils.save_fig(vutils.make_grid(test_X_hat_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'test_X_hat_noisy_mode{mode}_amount{amount}w')
+        # utils.save_fig(vutils.make_grid(train_X_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'train_X_noisy_mode{mode}_amount{amount}')
+        # utils.save_fig(vutils.make_grid(train_X_hat_noisy[:64].detach().cpu(), padding=2, normalize=True), args.epoch, 0, model_dir=os.path.join(args.model_dir, 'figures'), tail=f'train_X_hat_noisy_mode{mode}_amount{amount}')
 
 
     if args.svm:
@@ -1926,9 +2143,9 @@ if __name__ == '__main__':
     # if args.tsne:
         # plot_tsne_all(args, train_Z, train_Z_bar, train_labels, args.epoch)
         
-    # ## run --pca first
-    # if args.random_gen:
-    #     plot_random_gen(args, netG) # Figure 9,12 -- draw random generated images
+    ## run --pca first
+    if args.sampling:
+        plot_random_gen(args, model, ncomp=200, scale=0.2) # Figure 9,12 -- draw random generated images
     # if args.lin_gen:
     #     plot_linear_gen(args, netG)
 
@@ -1953,7 +2170,7 @@ if __name__ == '__main__':
             train_X_hat, inception_model, 100, device="cuda"
         )
         mu_real, sigma_real = calculate_activation_statistics(
-            train_X_hat, inception_model, 100, device="cuda"
+            train_X, inception_model, 100, device="cuda"
         )
         fid_score = calculate_frechet_distance(
             mu_fake, sigma_fake, mu_real, sigma_real

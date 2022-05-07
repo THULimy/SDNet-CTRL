@@ -86,7 +86,7 @@ def train(model, device, dataloader, optimizer, scheduler, criterion, num_epochs
             # X_bar = model.module.g_forward(Z.reshape(len(Z),-1,1,1))
             # Z_bar = model.module.f_forward(X_bar)
             Z, X_bar = model(X)
-            Z_bar, _ = model(X_bar.detach())
+            Z_bar, _ = model(X_bar)
             
             errG, detailed_loss_G = criterion(Z, Z_bar, cls_label)
             errG = (-1) * errG
@@ -130,7 +130,7 @@ def train(model, device, dataloader, optimizer, scheduler, criterion, num_epochs
         writer.add_images('Images/X_bar', normalize_back(X_bar[:16].cpu(), mean=0.5, std=0.5), epoch)
 
         # save models
-        if epoch % 5 == 0: 
+        if epoch % 10 == 0: 
             torch.save(model.module.state_dict(), os.path.join(model_dir, 'checkpoints', 'model-epoch{}.pt'.format(epoch)))
 
 def parse_args():
@@ -159,7 +159,7 @@ def main():
     batch_size = cfg['TRAIN']['BATCH_SIZE']
     nz = cfg['TRAIN']['NZ']
     ngf = cfg['TRAIN']['NGF']
-    ndf = cfg['TRAIN']['NGF']
+    ndf = ngf
     num_epochs = cfg['TRAIN']['EPOCHS']
     lr = cfg['TRAIN']['LR']
     n_iter_dis = cfg['TRAIN']['N_ITER_DIS']
@@ -180,8 +180,8 @@ def main():
     nc = 1 if 'MNIST' in dataset else 3
 
     model_dir = os.path.join('./saved_models',
-               'CTRL_{}_DCGAN-SDNET-arch{}_data{}_lmda{}_nlayer{}_nz{}_epo{}_bs{}_lr{}_niter{}_schestep{}_gam1{}_gam2{}_eps{}_optim{}_beta1{}_beta2{}_seed{}'.format(
-                    train_mode, arch, dataset, lmda, num_layer, nz, num_epochs, batch_size, lr, n_iter_dis, scheduler_steps, gam1, gam2, eps, 'Adam', adam_beta1, adam_beta2, manualSeed))
+               'CTRL_{}_DCGAN-SDNET-arch{}_data{}_lmda{}_nlayer{}_nz{}_ndf{}_epo{}_bs{}_lr{}_niter{}_schestep{}_gam1{}_gam2{}_eps{}_optim{}_beta1{}_beta2{}_seed{}'.format(
+                    train_mode, arch, dataset, lmda, num_layer, nz, ndf, num_epochs, batch_size, lr, n_iter_dis, scheduler_steps, gam1, gam2, eps, 'Adam', adam_beta1, adam_beta2, manualSeed))
 
     if not os.path.exists(model_dir):
         os.makedirs(model_dir)
@@ -215,25 +215,23 @@ def main():
                                     download=True, transform=transform)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, drop_last=True,
                                                 shuffle=True, num_workers=workers)
-
-    elif dataset == 'TMNIST':
+    elif dataset == 'FMNIST':
         transform = transforms.Compose(
                     [transforms.Resize(32),
                     transforms.ToTensor(),
-                    MyAffineTransform(choices=[[0, 1], [0, 1.5], [0, 0.5], [-45, 1], [45, 1]]),
                     transforms.Normalize(0.5, 0.5)])
-        trainset = datasets.MNIST(root='./data', train=True,
+        trainset = datasets.FashionMNIST(root='./data', train=True,
                                     download=True, transform=transform)
         trainloader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, drop_last=True,
                                                 shuffle=True, num_workers=workers)
 
     # Create the generator
-    from models.sdnet_DCGAN import Generator, Discriminator, InverseNet2, InverseNet4
+    from models.sdnet_DCGAN import Generator, Discriminator, InverseNet
     
-    if arch == 'INVERSE2':
-        model = InverseNet2(nz, ngf, nc).to(device)
-    elif arch == 'INVERSE4':
-        model = InverseNet4(nz, ngf, nc).to(device)
+    if arch == 'InverseNet':
+        model = InverseNet(nz, ndf, nc).to(device)
+    else:
+        raise ValueError('Not support arch.')
 
     # Handle multi-gpu if desired
     print(torch.cuda.device_count())
@@ -244,7 +242,7 @@ def main():
         print("====================")
         inputx = torch.zeros([100, nc, image_size, image_size]).cuda()
         # print(inputx)
-        _ = model.module.f_forward(inputx)
+        _ = model.module._forward(inputx)
         print("====================")
 
     # Apply the weights_init function to randomly initialize all weights
@@ -261,7 +259,6 @@ def main():
         scheduler = None
     else:
         scheduler = lr_scheduler.MultiStepLR(optimizer, scheduler_steps, gamma=scheduler_factor)
-
 
     # start training.
     train(model, device, trainloader, optimizer, scheduler, criterionMCRGAN, num_epochs, writer, model_dir, n_iter_dis)
